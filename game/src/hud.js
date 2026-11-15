@@ -1,74 +1,51 @@
-// The DOM HUD: crosshair, hit marker, ammo, score and the one overlay panel. It never touches
-// the simulation; main.js pushes numbers in and reads the play callback out.
-const COPY = {
-  start: {
-    title: 'Greybox Range',
-    copy: 'A plain room, one rifle and four targets. Click to play.',
-    action: 'Click to play',
-  },
-  paused: {
-    title: 'Greybox Range',
-    copy: 'Paused. Click to resume.',
-    action: 'Click to resume',
-  },
-  end: {
-    title: 'Range cleared',
-    copy: 'Every target is down.',
-    action: 'Play again',
-  },
-};
-
+// DOM-only presentation. Text is always assigned as textContent, never HTML from state.
 export function createHud() {
-  const overlay = document.getElementById('overlay');
-  const title = document.getElementById('overlay-title');
-  const copy = document.getElementById('overlay-copy');
-  const play = document.getElementById('play');
-  const ammo = document.getElementById('ammo');
-  const ammoMag = document.getElementById('ammo-mag');
-  const ammoReserve = document.getElementById('ammo-reserve');
-  const scoreValue = document.getElementById('score-value');
-  const hitmarker = document.getElementById('hitmarker');
-  let hitTimer = 0;
-  let lastMag = -1;
-  let lastReserve = -1;
-  let lastScore = -1;
-
+  const element = id => document.getElementById(id);
+  const overlay = element('overlay');
+  const buy = element('buy-menu');
+  let markerTimer;
   return {
-    setAmmo(mag, reserve) {
-      if (mag === lastMag && reserve === lastReserve) return;
-      lastMag = mag;
-      lastReserve = reserve;
-      ammoMag.textContent = String(mag);
-      ammoReserve.textContent = `/ ${reserve}`;
-      ammo.classList.toggle('empty', mag === 0);
+    setState(state, equipment, objective, allies, enemies) {
+      element('round').textContent = state.round;
+      const seconds = Math.ceil(state.time);
+      element('timer').textContent = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+      element('score-value').textContent = `${state.blue} : ${state.red}`;
+      element('money').textContent = `$${state.money}`;
+      element('objective').textContent = objective;
+      element('health').textContent = Math.max(0, Math.ceil(state.health));
+      element('weapon-name').textContent = equipment.config.name;
+      element('ammo-mag').textContent = equipment.weapon.state.mag;
+      element('ammo-reserve').textContent = `/ ${equipment.weapon.state.reserve}`;
+      element('phase').textContent = state.phase === 'buy' ? 'REQUISITION' : state.phase.toUpperCase();
+      element('squads').textContent = `WARDEN ${allies}  /  EMBER ${enemies}`;
+      element('equipment').textContent = `G · FRAG ×${state.grenades}   |   ${equipment.weapon.state.reloadLeft > 0 ? 'RELOADING…' : 'R · RELOAD'}`;
+      for (const button of buy.querySelectorAll('[data-cost]')) {
+        button.disabled = state.phase !== 'buy' || state.money < Number(button.dataset.cost);
+      }
+      element('crosshair').style.opacity = state.phase === 'live' && state.health > 0 ? '1' : '0';
     },
-    setScore(value) {
-      if (value === lastScore) return;
-      lastScore = value;
-      scoreValue.textContent = String(value);
+    hitMarker(kill, headshot = false) {
+      const marker = element('hitmarker');
+      marker.textContent = headshot ? '✦' : '×';
+      marker.style.color = kill ? '#ffc46b' : '#e8f3f5';
+      marker.classList.add('on');
+      clearTimeout(markerTimer);
+      markerTimer = setTimeout(() => marker.classList.remove('on'), 160);
     },
-    hitMarker(killed, holdMs = 90) {
-      hitmarker.classList.add('on');
-      hitmarker.style.transform = killed ? 'translate(-50%, -50%) rotate(45deg) scale(1.25)' : '';
-      clearTimeout(hitTimer);
-      hitTimer = setTimeout(() => {
-        hitmarker.classList.remove('on');
-        hitmarker.style.transform = '';
-      }, holdMs);
-    },
-    showOverlay(mode, score) {
-      const text = COPY[mode];
-      title.textContent = text.title;
-      copy.textContent = mode === 'end' ? `${text.copy} You scored ${score}.` : text.copy;
-      play.textContent = text.action;
+    notice(text) { element('notice').textContent = text; },
+    show(mode, title, copy, action = 'DEPLOY') {
+      element('overlay-title').textContent = title;
+      element('overlay-copy').textContent = copy;
+      element('play').textContent = action;
+      buy.hidden = mode !== 'buy';
       overlay.hidden = false;
-      play.focus();
     },
-    hideOverlay() {
-      overlay.hidden = true;
-    },
-    onPlay(handler) {
-      play.addEventListener('click', handler);
+    hide() { overlay.hidden = true; },
+    onPlay(callback) { element('play').addEventListener('click', callback); },
+    onBuy(callback) {
+      for (const button of buy.querySelectorAll('[data-item]')) {
+        button.addEventListener('click', () => callback(button.dataset.item));
+      }
     },
   };
 }

@@ -1,225 +1,295 @@
-// Boot and the one loop: a fixed 60 Hz simulation feeding a render at the display's rate.
-// ?shot=start|play|end with &seed=N sets up a deterministic frame for a capture, renders it
-// twice, then freezes it and sets window.__shotReady.
+// Composition root: fixed-step gameplay is separate from frame rendering and DOM events.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 import { createWorld } from './world.js';
 import { createInput } from './input.js';
 import { createPlayer } from './player.js';
-import { createWeapon } from './weapon.js';
 import { createTargets } from './targets.js';
 import { createHud } from './hud.js';
+import { createRounds } from './rounds.js';
+import { createNavigation } from './navigation.js';
+import { createObjective } from './objective.js';
+import { createArsenal, WEAPONS } from './arsenal.js';
+import { createCombat } from './combat.js';
+import { createBots } from './bots.js';
+import { createGrenades } from './grenades.js';
+import { decorateWorld } from './scenery.js';
 
-const FIXED_STEP = 1 / 60;
-const params = new URLSearchParams(window.location.search);
-const shot = params.get('shot');
-const seed = Number.parseInt(params.get('seed') ?? '1', 10) || 1;
-
-function mulberry32(initial) {
-  let a = initial;
-  return function random() {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+const STEP = 1 / 60;
+const capture = new URLSearchParams(window.location.search).get('shot');
+let seed = 1729;
+function random() {
+  seed = (seed * 1664525 + 1013904223) >>> 0;
+  return seed / 4294967296;
 }
-const random = mulberry32(seed);
-
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-document.getElementById('game').appendChild(renderer.domElement);
-
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.getElementById('game').append(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(PALETTE.canvas);
-scene.fog = new THREE.Fog(new THREE.Color(PALETTE.canvas), 18, 46);
-const camera = new THREE.PerspectiveCamera(74, window.innerWidth / window.innerHeight, 0.05, 140);
+scene.fog = new THREE.Fog(PALETTE.canvas, 22, 55);
+const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.05, 100);
 scene.add(camera);
-
 const world = createWorld(scene);
-const targets = createTargets(scene);
-const weapon = createWeapon(camera);
-const hud = createHud();
+decorateWorld(scene);
+const navigation = createNavigation(world.colliders);
 const player = createPlayer(world.colliders);
-const input = createInput(renderer.domElement, onLockChange);
-const raycaster = new THREE.Raycaster();
-raycaster.far = 80;
-const shootables = world.shootables.concat(targets.hitMeshes);
-const direction = new THREE.Vector3();
-
-const body = player.state;
-const markerHoldMs = shot ? 4000 : 90;
-let score = 0;
-let elapsed = 0;
-let cleared = false;
-let frozen = false;
-let started = false;
-let accumulator = 0;
-let lastTime = performance.now();
-
-hud.setAmmo(weapon.state.mag, weapon.state.reserve);
-hud.setScore(0);
-hud.onPlay(() => {
-  if (shot) return;
-  if (cleared) restart();
-  input.requestLock();
-});
-
-function restart() {
-  cleared = false;
-  score = 0;
-  elapsed = 0;
-  targets.reset();
-  weapon.refill();
-  hud.setScore(0);
-  hud.setAmmo(weapon.state.mag, weapon.state.reserve);
+const hud = createHud();
+const rounds = createRounds();
+const state = rounds.state;
+const equipment = createArsenal(camera);
+const objective = createObjective(scene);
+const enemies = createTargets(scene, { spawns: [[-6, -9], [6, -9], [9, -3]], respawn: false });
+const allies = createTargets(scene, { spawns: [[-6, 8], [6, 8]], team: 'blue', respawn: false });
+const actors = [...enemies.items, ...allies.items];
+for (const actor of actors) {
+  actor.position = actor.group.position;
+  actor.meshes = [actor.torso, actor.head];
+  actor.squad = actor.team === 'red' ? enemies : allies;
+  for (const mesh of actor.meshes) mesh.userData.actor = actor;
 }
+// Raycast proxies follow the player's actual crouch height. Invisible meshes still raycast.
+const playerBody = new THREE.Mesh(new THREE.BoxGeometry(0.55, 1, 0.5));
+const playerHead = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 8));
+playerBody.visible = playerHead.visible = false;
+scene.add(playerBody, playerHead);
+const human = {
+  player: true, team: 'blue', position: player.state.position,
+  meshes: [playerBody, playerHead], eye: () => player.state.eye,
+  get alive() { return state.health > 0; },
+};
+playerBody.userData.actor = playerHead.userData.actor = human;
+playerHead.userData.part = 'head';
+actors.push(human);
+let elapsed = 0;
+const combat = createCombat(scene, world, actors, damage);
+const bots = createBots(actors, navigation, combat, objective, random);
+const grenades = createGrenades(scene, world.colliders, actors, combat, damage);
+const input = createInput(renderer.domElement, locked => {
+  if (locked && state.phase === 'live') hud.hide();
+  if (!locked && state.phase === 'live') {
+    hud.show('pause', 'LINK PAUSED', 'Simulation waits while the mouse is released.', 'RESUME');
+  }
+});
+const direction = new THREE.Vector3();
+const endpoint = new THREE.Vector3();
+const right = new THREE.Vector3();
+const up = new THREE.Vector3();
+const pressed = new Set();
+let bloom = 0;
 
-function onLockChange(locked) {
-  if (shot) return;
-  if (locked) {
-    started = true;
-    hud.hideOverlay();
-  } else if (!cleared) {
-    hud.showOverlay(started ? 'paused' : 'start', score);
+function damage(actor, amount, attacker, headshot) {
+  if (!actor.alive || state.phase !== 'live') return;
+  let killed;
+  if (actor.player) {
+    state.health = Math.max(0, state.health - amount);
+    killed = !human.alive;
+    hud.notice(killed ? 'OPERATOR DOWN · squad continues the operation' : 'TAKING FIRE · find cover');
+  } else killed = actor.squad.damage(actor.torso, amount);
+  if (attacker === human && actor.team !== human.team) {
+    hud.hitMarker(killed, headshot);
+    if (killed) {
+      rounds.reward(headshot);
+      hud.notice(headshot ? 'HEADSHOT · +$450' : 'HOSTILE DOWN · +$300');
+    }
   }
 }
 
 function syncCamera() {
-  camera.position.set(body.position.x, body.position.y + body.eye, body.position.z);
-  camera.rotation.set(body.pitch, body.yaw, 0, 'YXZ');
-}
-
-function aimAt(point) {
-  const dx = point.x - body.position.x;
-  const dy = point.y - (body.position.y + body.eye);
-  const dz = point.z - body.position.z;
-  const length = Math.hypot(dx, dy, dz) || 1;
-  body.yaw = Math.atan2(-dx, -dz);
-  body.pitch = Math.asin(Math.max(-1, Math.min(1, dy / length)));
-  syncCamera();
-}
-
-function shoot(spread) {
-  if (!weapon.takeRound()) return false;
-  camera.getWorldDirection(direction);
-  direction.x += (random() * 2 - 1) * spread;
-  direction.y += (random() * 2 - 1) * spread;
-  direction.z += (random() * 2 - 1) * spread;
-  direction.normalize();
+  camera.position.copy(player.state.position).y += player.state.eye;
+  camera.rotation.set(player.state.pitch, player.state.yaw, 0, 'YXZ');
+  playerBody.position.copy(player.state.position).y += player.state.eye * 0.48;
+  playerBody.scale.y = player.state.eye * 0.7;
+  playerHead.position.copy(player.state.position).y += player.state.eye - 0.06;
   scene.updateMatrixWorld(true);
-  raycaster.set(camera.position, direction);
-  const hit = raycaster.intersectObjects(shootables, false)[0];
-  if (hit && hit.object.userData.target) {
-    const killed = targets.damage(hit.object, hit.object.userData.part === 'head' ? 100 : 34);
-    score += killed ? 100 : 10;
-    hud.setScore(score);
-    hud.hitMarker(killed, markerHoldMs);
-    if (targets.remaining() === 0 && !cleared) {
-      cleared = true;
-      hud.showOverlay('end', score);
-      if (document.pointerLockElement) document.exitPointerLock();
-    }
+}
+
+function shoot() {
+  if (!equipment.fire()) return;
+  const config = equipment.config;
+  camera.getWorldDirection(direction);
+  right.setFromMatrixColumn(camera.matrixWorld, 0);
+  up.setFromMatrixColumn(camera.matrixWorld, 1);
+  const spread = (equipment.weapon.spread(player.groundSpeed()) * config.spread + bloom) * (player.state.crouching ? 0.6 : 1);
+  const angle = random() * Math.PI * 2;
+  const radius = Math.sqrt(random()) * spread;
+  direction.addScaledVector(right, Math.cos(angle) * radius).addScaledVector(up, Math.sin(angle) * radius).normalize();
+  endpoint.copy(direction).multiplyScalar(70).add(camera.position);
+  combat.fire(camera.position, endpoint, human, config.damage);
+  bots.hear(human.position, human.team);
+  player.recoil(config.kick, (random() - 0.5) * config.kick * 0.5);
+  bloom = Math.min(0.018, bloom + 0.003);
+}
+
+function beginRound(next = false) {
+  const wasDead = state.health <= 0;
+  if (next) rounds.next();
+  else rounds.begin();
+  enemies.reset();
+  allies.reset();
+  bots.reset();
+  objective.reset();
+  grenades.reset();
+  if (wasDead) equipment.equip('carbine');
+  equipment.reset();
+  player.state.position.set(0, 0, 9.5);
+  player.state.velocity.set(0, 0, 0);
+  player.state.yaw = player.state.pitch = 0;
+  player.state.eye = 1.6;
+  player.state.crouching = false;
+  player.state.height = 1.72;
+  player.state.onGround = true;
+  bloom = 0;
+  elapsed = 0;
+  pressed.clear();
+  syncCamera();
+  hud.show('buy', 'REQUISITION', 'Warden squad · 3 vs 3. Link relay A or eliminate Ember. Equipment persists between rounds.', 'DEPLOY NOW');
+  hud.notice('B · requisition during buy phase only');
+}
+
+function buy(item) {
+  if (state.phase !== 'buy') return;
+  if (item === 'grenade') {
+    if (state.grenades >= 2) { hud.notice('FRAG CAPACITY · 2'); return; }
+    if (rounds.spend(300)) { state.grenades++; hud.notice('FRAG ACQUIRED'); }
+    else hud.notice('INSUFFICIENT CREDITS');
+  } else if (WEAPONS[item]) {
+    if (equipment.id === item) { hud.notice('ALREADY EQUIPPED · ammo refills each round'); return; }
+    if (rounds.spend(WEAPONS[item].price)) {
+      equipment.equip(item);
+      hud.notice(`${WEAPONS[item].name} ACQUIRED`);
+    } else hud.notice('INSUFFICIENT CREDITS');
   }
-  weapon.pullTrigger();
-  player.recoil(0.009 + random() * 0.004, (random() * 2 - 1) * 0.004);
-  hud.setAmmo(weapon.state.mag, weapon.state.reserve);
-  return true;
+  updateHud();
 }
 
-function step(dt) {
-  elapsed += dt;
-  player.step(dt, input.state.keys);
-  weapon.step(dt);
-  targets.step(dt, elapsed);
-}
-
-function frame(now) {
-  requestAnimationFrame(frame);
-  const dt = Math.min((now - lastTime) / 1000, 0.1);
-  lastTime = now;
-  if (!frozen) {
-    const look = input.takeLook();
-    player.look(look.x, look.y);
-    if (input.state.firing && weapon.ready()) shoot(shot ? 0 : weapon.spread(player.groundSpeed()));
-    if (input.state.keys.has('KeyR')) weapon.reload();
-    accumulator += dt;
-    let steps = 0;
-    while (accumulator >= FIXED_STEP && steps < 5) {
-      step(FIXED_STEP);
-      accumulator -= FIXED_STEP;
-      steps += 1;
-    }
-    if (accumulator > FIXED_STEP * 5) accumulator = 0;
-    syncCamera();
+hud.onBuy(buy);
+hud.onPlay(() => {
+  if (state.phase === 'briefing') beginRound();
+  else if (state.phase === 'result') beginRound(true);
+  else {
+    if (state.phase === 'buy') rounds.deploy();
+    hud.hide();
+    input.requestLock();
   }
-  renderer.render(scene, camera);
-}
-
-function settle(steps) {
-  for (let index = 0; index < steps; index += 1) step(FIXED_STEP);
-}
-
-function runShot(name) {
-  hud.hideOverlay();
-  body.pitch = 0;
-  body.yaw = 0;
-  if (name === 'play' || name === 'end') {
-    body.position.set(0, 0, -5);
-    settle(20);
-    const count = name === 'play' ? 1 : targets.items.length;
-    for (let index = 0; index < count; index += 1) {
-      const point = targets.aimPoint(index);
-      for (let round = 0; round < 3; round += 1) {
-        aimAt(point);
-        shoot(0);
-        if (round < 2) settle(8);
-      }
-    }
-    if (name === 'play') {
-      settle(12);
-      aimAt(targets.aimPoint(1));
-      shoot(0);
-      settle(1);
-    } else {
-      settle(40);
-    }
-  } else {
-    body.position.set(0.6, 0, 8.6);
-    settle(20);
-    aimAt(new THREE.Vector3(0, 1.5, -6));
-    hud.showOverlay('start', 0);
+  updateHud();
+});
+window.addEventListener('keydown', event => {
+  if (event.repeat) return;
+  if (event.code === 'KeyB' && state.phase === 'buy') hud.show('buy', 'REQUISITION', 'Choose equipment before deployment.', 'DEPLOY NOW');
+  if (state.phase === 'buy' && ['Digit1', 'Digit2', 'Digit3'].includes(event.code)) {
+    buy({ Digit1: 'carbine', Digit2: 'marksman', Digit3: 'grenade' }[event.code]);
   }
-  hud.setScore(score);
-  hud.setAmmo(weapon.state.mag, weapon.state.reserve);
-  paintTwiceThenReady();
-}
-
-function paintTwiceThenReady() {
-  let painted = 0;
-  function paint() {
-    requestAnimationFrame(paint);
-    syncCamera();
-    renderer.render(scene, camera);
-    painted += 1;
-    if (painted === 2) {
-      window.__shotReady = true;
-      frozen = true;
-    }
-  }
-  requestAnimationFrame(paint);
-}
-
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+document.addEventListener('pointerlockerror', () => {
+  hud.show('pause', 'MOUSE CAPTURE REQUIRED', 'Chrome refused pointer lock. Click resume to retry, or allow mouse capture for this page.', 'RESUME');
 });
 
+function finish(win, reason) {
+  if (!rounds.finish(win, reason)) return;
+  document.exitPointerLock();
+  hud.show('result', state.result, `${reason} · ${win ? '+$2200' : '+$1400'} round income.`, 'NEXT ROUND');
+}
+
+function updateHud() {
+  hud.setState(state, equipment, objective.text(human.position), allies.remaining() + (human.alive ? 1 : 0), enemies.remaining());
+}
+
+function simulate(dt) {
+  if (state.phase !== 'buy' && state.phase !== 'live') return;
+  const oldPhase = state.phase;
+  rounds.tick(dt);
+  if (oldPhase === 'buy') {
+    if (state.phase === 'live' && !input.state.locked) hud.show('pause', 'OPERATION READY', 'Requisition closed. Capture the mouse to begin.', 'RESUME');
+    updateHud();
+    return;
+  }
+  elapsed += dt;
+  bloom = Math.max(0, bloom - dt * 0.025);
+  const look = input.takeLook();
+  if (human.alive) {
+    player.look(look.x, look.y);
+    player.step(dt, input.state.keys);
+  }
+  syncCamera();
+  equipment.step(dt);
+  enemies.step(dt, elapsed);
+  allies.step(dt, elapsed);
+  scene.updateMatrixWorld(true);
+  if (human.alive) {
+    if (input.state.firing && !input.state.keys.has('KeyE')) shoot();
+    if (input.state.keys.has('KeyR')) equipment.weapon.reload();
+    if (input.state.keys.has('KeyG') && !pressed.has('KeyG') && state.grenades > 0) {
+      camera.getWorldDirection(direction);
+      if (grenades.throw(camera.position, direction, human)) {
+        state.grenades--;
+        bots.hear(human.position, human.team);
+      }
+    }
+  }
+  pressed.clear();
+  for (const key of input.state.keys) pressed.add(key);
+  bots.step(dt);
+  scene.updateMatrixWorld(true);
+  grenades.step(dt);
+  combat.step(dt);
+  const planting = human.alive && objective.near(human.position) && input.state.keys.has('KeyE') && player.groundSpeed() < 0.5;
+  objective.step(dt, planting, bots.defusing());
+  if (objective.state.disarm >= 5) finish(false, 'Ember disarmed the relay');
+  else if (objective.state.armed && objective.state.fuse === 0) finish(true, 'Relay transfer completed');
+  else if (enemies.remaining() === 0) finish(true, 'Ember squad eliminated');
+  else if (!human.alive && allies.remaining() === 0 && !objective.state.armed) finish(false, 'Warden squad eliminated');
+  else if (state.time === 0 && !objective.state.armed) finish(false, 'Link window expired');
+  // Once planted the fuse replaces the round clock; a dead squad can still win the transfer.
+  updateHud();
+}
+
+let last = performance.now(), accumulator = 0;
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.1, (now - last) / 1000);
+  last = now;
+  const running = state.phase === 'buy' || (state.phase === 'live' && input.state.locked);
+  if (running && !document.hidden) {
+    accumulator += dt;
+    while (accumulator >= STEP) { simulate(STEP); accumulator -= STEP; }
+  } else accumulator = 0;
+  renderer.render(scene, camera);
+}
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
 syncCamera();
-if (shot) runShot(shot);
-else requestAnimationFrame(frame);
+if (capture) {
+  // Capture states use the same game scene and renderer, but freeze simulation for a reproducible frame.
+  if (capture === 'buy') {
+    beginRound();
+    equipment.equip('marksman');
+    rounds.spend(1900);
+  } else if (capture === 'live' || capture === 'result') {
+    beginRound();
+    rounds.deploy();
+    player.state.position.set(0, 0, 9.5);
+    player.state.yaw = 0;
+    syncCamera();
+  }
+  updateHud();
+  if (capture !== 'live') hud.show(capture === 'buy' ? 'buy' : capture, capture === 'buy' ? 'REQUISITION' : 'ROUND SECURED', capture === 'buy' ? 'Warden squad · 3 vs 3. Link relay A or eliminate Ember. Equipment persists between rounds.' : 'Relay transfer complete · +$2200 round income.', capture === 'buy' ? 'DEPLOY NOW' : 'NEXT ROUND');
+  else hud.hide();
+  renderer.render(scene, camera);
+  requestAnimationFrame(() => {
+    renderer.render(scene, camera);
+    window.__shotReady = true;
+  });
+} else {
+  hud.show('briefing', 'NEON BREACH', 'The tidal relay is compromised. Lead Warden squad through the dry dock, link the amber relay, and hold off Ember until the transfer completes.', 'ENTER REQUISITION');
+  requestAnimationFrame(frame);
+}

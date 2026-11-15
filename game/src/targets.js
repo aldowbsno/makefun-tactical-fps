@@ -13,8 +13,10 @@ const HEALTH = 100;
 const RESPAWN_SECONDS = 4;
 const FALL_SECONDS = 0.4;
 
-export function createTargets(scene) {
+export function createTargets(scene, { spawns = SPAWNS, team = 'red', respawn = true } = {}) {
   const bodyMaterial = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.ink), roughness: 0.6, metalness: 0.05 });
+  if (team === 'red') bodyMaterial.color.set('#e65f70');
+  else bodyMaterial.color.set('#55d5de');
   const headMaterial = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.accent), roughness: 0.45, metalness: 0.1 });
   const standMaterial = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.hairline), roughness: 0.85 });
   const torsoGeometry = new THREE.BoxGeometry(0.52, 0.78, 0.3);
@@ -26,8 +28,8 @@ export function createTargets(scene) {
   const hitMeshes = [];
   let now = 0;
 
-  for (let index = 0; index < SPAWNS.length; index += 1) {
-    const [x, z] = SPAWNS[index];
+  for (let index = 0; index < spawns.length; index += 1) {
+    const [x, z] = spawns[index];
     const group = new THREE.Group();
     group.position.set(x, 0, z);
 
@@ -50,7 +52,7 @@ export function createTargets(scene) {
     });
     scene.add(group);
 
-    const item = { group, torso, head, health: HEALTH, alive: true, fall: 0, respawnAt: 0, phase: index * 1.7, home: new THREE.Vector3(x, 0, z) };
+    const item = { group, torso, head, team, health: HEALTH, alive: true, fall: 0, respawnAt: 0, phase: index * 1.7, home: new THREE.Vector3(x, 0, z) };
     torso.userData.target = item;
     head.userData.target = item;
     hitMeshes.push(torso, head);
@@ -79,7 +81,7 @@ export function createTargets(scene) {
       item.fall = Math.min(1, item.fall + dt / FALL_SECONDS);
       item.group.rotation.x = -item.fall * 1.45;
       item.group.position.y = -item.fall * 0.08;
-      if (time >= item.respawnAt) {
+      if (respawn && time >= item.respawnAt) {
         item.alive = true;
         item.health = HEALTH;
         item.fall = 0;

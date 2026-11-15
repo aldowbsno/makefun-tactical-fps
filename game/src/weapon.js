@@ -38,6 +38,8 @@ export function createWeapon(camera) {
   flashLight.position.set(0.24, -0.16, -0.6);
   camera.add(flashLight);
 
+  let capacity = MAG_SIZE;
+  let reserveCapacity = RESERVE;
   const state = { mag: MAG_SIZE, reserve: RESERVE, cooldown: 0, reloadLeft: 0, flash: 0, kick: 0 };
 
   function step(dt) {
@@ -53,7 +55,7 @@ export function createWeapon(camera) {
       state.reloadLeft = Math.max(0, state.reloadLeft - dt);
       model.rotation.x = -0.55 * Math.min(1, (RELOAD_TIME - state.reloadLeft) * 2);
       if (state.reloadLeft === 0) {
-        const need = MAG_SIZE - state.mag;
+        const need = capacity - state.mag;
         const take = Math.min(need, state.reserve);
         state.mag += take;
         state.reserve -= take;
@@ -78,15 +80,20 @@ export function createWeapon(camera) {
       return true;
     },
     reload() {
-      if (state.reloadLeft > 0 || state.mag === MAG_SIZE || state.reserve === 0) return;
+      if (state.reloadLeft > 0 || state.mag === capacity || state.reserve === 0) return;
       state.reloadLeft = RELOAD_TIME;
     },
     spread(speed) {
       return SPREAD_STILL + Math.min(1, speed / MOVE_REFERENCE) * SPREAD_MOVING;
     },
+    configure(mag, reserve) {
+      capacity = mag;
+      reserveCapacity = reserve;
+      this.refill();
+    },
     refill() {
-      state.mag = MAG_SIZE;
-      state.reserve = RESERVE;
+      state.mag = capacity;
+      state.reserve = reserveCapacity;
       state.cooldown = 0;
       state.reloadLeft = 0;
       state.flash = 0;
