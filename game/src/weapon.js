@@ -98,6 +98,7 @@ export function createWeapon(camera) {
       state.reloadLeft = 0;
       state.flash = 0;
       state.kick = 0;
+      step(0);
     },
   };
 }

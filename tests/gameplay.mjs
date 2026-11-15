@@ -12,6 +12,9 @@ import { createObjective } from '../game/src/objective.js';
 import { createCombat } from '../game/src/combat.js';
 import { createBots } from '../game/src/bots.js';
 import { createGrenades } from '../game/src/grenades.js';
+import { createMatch } from '../game/src/match.js';
+import { captureMode, pixelDiversity } from '../game/src/capture.js';
+import { roundOutcome } from '../game/src/rounds.js';
 
 let checks = 0;
 function test(name, callback) {
@@ -56,6 +59,93 @@ test('round timer, buy restrictions, single payout, loss and reset', () => {
   assert.equal(rounds.state.red, 1);
   assert.equal(rounds.state.blue, 1);
   assert.equal(rounds.state.money, money + 1400);
+});
+
+test('capture modes and scene readiness reject HUD-only or uniform pixels', () => {
+  assert.equal(captureMode('?shot=briefing'), 'briefing');
+  assert.equal(captureMode('?shot=buy'), 'buy');
+  assert.equal(captureMode('?shot=live'), 'live');
+  assert.equal(captureMode('?shot=result'), 'briefing');
+  assert.equal(captureMode(''), null);
+  const flat = new Uint8Array(80 * 60 * 4);
+  for (let i = 0; i < flat.length; i += 4) flat.set([14, 29, 42, 255], i);
+  assert.equal(pixelDiversity(flat, 80, 60).visible, false);
+  const varied = new Uint8Array(80 * 60 * 4);
+  for (let y = 0; y < 60; y++) for (let x = 0; x < 80; x++) {
+    const i = (y * 80 + x) * 4;
+    varied.set([x * 3, y * 4, (x * 7 + y * 3) % 256, 255], i);
+  }
+  assert.equal(pixelDiversity(varied, 80, 60).visible, true);
+});
+
+test('objective resolution is single, timed, and its disarm wins a simultaneous fuse deadline', () => {
+  const objective = createObjective(new THREE.Scene());
+  objective.step(3, true, false);
+  assert.equal(objective.state.armed, true);
+  objective.state.fuse = 5;
+  objective.step(5, false, true);
+  assert.equal(objective.state.outcome, 'disarmed');
+  objective.step(5, false, false);
+  assert.equal(objective.state.outcome, 'disarmed');
+  assert.equal(roundOutcome({ phase: 'live' }, objective.state, 2, 2).win, false);
+  objective.reset();
+  objective.step(3, true, false);
+  objective.state.fuse = 0.1;
+  objective.step(0.1, false, false);
+  assert.equal(objective.state.outcome, 'transferred');
+  assert.equal(roundOutcome({ phase: 'live' }, objective.state, 2, 2).win, true);
+});
+
+test('match transitions, paid purchases, combat result and full round reset use one simulation', () => {
+  const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera();
+  const world = createWorld(scene);
+  const match = createMatch({ scene, camera, world, random: () => 0.5 });
+  assert.equal(match.beginRound(), true);
+  assert.equal(match.beginRound(), false);
+  assert.equal(match.buy('marksman'), true);
+  assert.equal(match.equipment.id, 'marksman');
+  assert.equal(match.state.money, 500);
+  assert.equal(match.buy('unknown'), false);
+  assert.equal(match.buy('grenade'), true);
+  assert.equal(match.state.grenades, 2);
+  assert.equal(match.buy('grenade'), false);
+  match.rounds.deploy();
+  match.state.money = 12000;
+  assert.equal(match.buy('grenade'), false);
+  match.enemies.items.forEach(enemy => match.enemies.damage(enemy.head, 300));
+  match.step(1 / 60, { keys: new Set(), firing: false });
+  assert.equal(match.state.phase, 'result');
+  assert.equal(match.state.blue, 1);
+  assert.equal(match.state.money, 12000);
+  assert.equal(match.buy('marksman'), false);
+  assert.equal(match.beginRound(), true);
+  assert.equal(match.state.round, 2);
+  assert.equal(match.state.phase, 'buy');
+  assert.equal(match.enemies.remaining(), 3);
+  assert.equal(match.allies.remaining(), 2);
+  assert.equal(match.objective.state.armed, false);
+  assert.equal(match.equipment.id, 'marksman');
+  assert.equal(match.equipment.weapon.state.mag, 12);
+});
+
+test('match player ray hits the separated head proxy and pays the headshot reward', () => {
+  const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(72, 1, 0.05, 100);
+  const match = createMatch({ scene, camera, world: createWorld(scene), random: () => 0.5 });
+  match.beginRound(); match.rounds.deploy();
+  match.player.state.position.set(-6, 0, -5);
+  match.player.state.yaw = 0;
+  match.syncCamera();
+  match.step(1 / 60, { keys: new Set(), firing: true });
+  assert.equal(match.enemies.items[0].alive, false);
+  assert.equal(match.state.money, 2850);
+  assert.equal(match.equipment.weapon.state.mag, 29);
+});
+
+test('round outcome requires an executed live result and handles timeout after objective state', () => {
+  assert.equal(roundOutcome({ phase: 'buy', time: 0, health: 0 }, {}, 0, 0), null);
+  assert.equal(roundOutcome({ phase: 'live', time: 0, health: 100 }, { armed: true }, 1, 2), null);
+  assert.equal(roundOutcome({ phase: 'live', time: 0, health: 100 }, { armed: false }, 1, 2).win, false);
+  assert.equal(roundOutcome({ phase: 'live', time: 10, health: 0 }, { armed: false }, 1, 0).win, false);
 });
 
 const scene = new THREE.Scene();

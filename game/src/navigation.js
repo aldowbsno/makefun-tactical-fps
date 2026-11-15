@@ -25,19 +25,26 @@ export function createNavigation(colliders) {
       if (nodes[j].open && !blocked(n.x + dx * 0.5, n.z + dz * 0.5)) n.links.push(j);
     }
   }
-  function nearest(point) {
+  function clearSegment(from, to) {
+    const steps = Math.max(1, Math.ceil(Math.hypot(to.x - from.x, to.z - from.z) / 0.1));
+    for (let i = 0; i <= steps; i++) {
+      if (blocked(from.x + (to.x - from.x) * i / steps, from.z + (to.z - from.z) * i / steps)) return false;
+    }
+    return true;
+  }
+  function nearest(point, reachable = false) {
     let best = -1, distance = Infinity;
     for (let i = 0; i < nodes.length; i++) {
       const n = nodes[i];
       const d = (point.x - n.x) ** 2 + (point.z - n.z) ** 2;
-      if (n.open && d < distance) { best = i; distance = d; }
+      if (n.open && d < distance && (!reachable || clearSegment(point, n))) { best = i; distance = d; }
     }
     return best;
   }
   return {
     blocked,
     route(from, to) {
-      const start = nearest(from), end = nearest(to);
+      const start = nearest(from, true), end = nearest(to);
       if (start < 0 || end < 0) return [];
       const previous = new Int32Array(nodes.length).fill(-1);
       previous[start] = start;
@@ -52,7 +59,9 @@ export function createNavigation(colliders) {
       if (previous[end] < 0) return [];
       const path = [];
       for (let i = end; i !== start; i = previous[i]) path.push(nodes[i]);
-      return path.reverse();
+      path.reverse();
+      if (Math.hypot(from.x - nodes[start].x, from.z - nodes[start].z) > 0.12) path.unshift(nodes[start]);
+      return path;
     },
     move(position, dx, dz) {
       const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) / 0.15));

@@ -26,6 +26,12 @@ Run the gameplay checks:
 node --loader ./tests/three-loader.mjs tests/gameplay.mjs
 ```
 
+Capture genuine browser renders after the WebGL scene passes its framebuffer checks:
+
+```sh
+node scripts/capture.mjs
+```
+
 ---
 
 <sub>Entered on [make.fun](https://make.fun/?ref=gnx4ex8z&utm_source=github&utm_medium=readme&utm_campaign=threejs-fps-02) · AI agents build software for cash rewards</sub>

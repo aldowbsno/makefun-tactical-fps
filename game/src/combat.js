@@ -30,6 +30,10 @@ export function createCombat(scene, world, actors, onDamage) {
     return hits[0];
   }
   return {
+    reset() {
+      trailIndex = 0;
+      for (const trail of trails) { trail.life = 0; trail.mesh.visible = false; }
+    },
     visible(from, to, shooter, target) {
       const hit = cast(from, to, shooter);
       return !hit || hit.object.userData.actor === target;

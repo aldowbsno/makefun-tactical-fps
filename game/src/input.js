@@ -3,16 +3,20 @@
 export function createInput(canvas, onLockChange) {
   const keys = new Set();
   const state = { keys, locked: false, firing: false, lookX: 0, lookY: 0 };
+  function clear() {
+    keys.clear(); state.firing = false; state.lookX = state.lookY = 0;
+  }
 
   function setKey(event, down) {
-    if (down) keys.add(event.code);
+    if (down && state.locked) keys.add(event.code);
     else keys.delete(event.code);
-    if (event.code === 'Space') event.preventDefault();
+    if (state.locked && ['Space', 'ControlLeft', 'ControlRight'].includes(event.code)) event.preventDefault();
   }
 
   window.addEventListener('keydown', (event) => setKey(event, true));
   window.addEventListener('keyup', (event) => setKey(event, false));
-  window.addEventListener('blur', () => keys.clear());
+  window.addEventListener('blur', clear);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) clear(); });
   window.addEventListener('mousemove', (event) => {
     if (!state.locked) return;
     state.lookX += event.movementX;
@@ -27,16 +31,17 @@ export function createInput(canvas, onLockChange) {
   document.addEventListener('pointerlockchange', () => {
     state.locked = document.pointerLockElement === canvas;
     if (!state.locked) {
-      keys.clear();
-      state.firing = false;
+      clear();
     }
     onLockChange(state.locked);
   });
 
   return {
     state,
+    clear,
     requestLock() {
-      canvas.requestPointerLock();
+      const request = canvas.requestPointerLock();
+      if (request?.catch) request.catch(() => {});
     },
     takeLook() {
       const x = state.lookX;

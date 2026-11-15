@@ -15,21 +15,32 @@ export function createObjective(scene) {
   relay.add(core);
   relay.position.copy(position);
   scene.add(relay);
-  const state = { armed: false, charge: 0, disarm: 0, fuse: 25 };
+  const state = { armed: false, charge: 0, disarm: 0, fuse: 25, outcome: null };
+  function updateVisuals() {
+    material.emissiveIntensity = state.armed ? 0.6 + Math.sin(state.fuse * 8) * 0.4 : 0.35;
+    ring.material.color.set(state.armed ? '#ff6577' : '#ffc46b');
+  }
   return {
     state, position,
-    reset() { state.armed = false; state.charge = 0; state.disarm = 0; state.fuse = 25; },
-    near(point) { return Math.hypot(point.x - position.x, point.z - position.z) < 1.9; },
+    reset() {
+      state.armed = false; state.charge = 0; state.disarm = 0; state.fuse = 25; state.outcome = null;
+      updateVisuals();
+    },
+    near(point) { return Math.abs(point.y - position.y) < 0.6 && Math.hypot(point.x - position.x, point.z - position.z) < 1.9; },
     step(dt, planting, defusing) {
+      if (state.outcome) return;
       if (!state.armed) {
         state.charge = planting ? Math.min(3, state.charge + dt) : 0;
         if (state.charge >= 3) state.armed = true;
       } else {
-        state.fuse = Math.max(0, state.fuse - dt);
-        state.disarm = defusing ? Math.min(5, state.disarm + dt) : 0;
+        const disarmLeft = defusing ? 5 - state.disarm : Infinity;
+        const advance = Math.min(dt, state.fuse, disarmLeft);
+        state.fuse = Math.max(0, state.fuse - advance);
+        state.disarm = defusing ? Math.min(5, state.disarm + advance) : 0;
+        if (disarmLeft <= advance) state.outcome = 'disarmed';
+        else if (state.fuse === 0) state.outcome = 'transferred';
       }
-      material.emissiveIntensity = state.armed ? 0.6 + Math.sin(state.fuse * 8) * 0.4 : 0.35;
-      ring.material.color.set(state.armed ? '#ff6577' : '#ffc46b');
+      updateVisuals();
     },
     text(point) {
       if (state.armed) return `RELAY ARMED · ${Math.ceil(state.fuse)}s · defend against disarm`;
